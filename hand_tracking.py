@@ -2,7 +2,7 @@
 """
 3D Hand Tracking using MediaPipe
 Processes video shots and extracts 3D hand landmarks data.
-Supports batch processing of Sessions folders in GCS.
+Supports batch processing of Sessions/shot_XX folder structure in GCS.
 """
 
 import cv2
@@ -118,9 +118,7 @@ def process_video_for_hand_tracking(
     Returns:
         Dictionary containing tracking results and metadata
     """
-    print(f"\n{'='*80}")
-    print(f"Processing video: {video_path}")
-    print(f"{'='*80}")
+    print(f"\nProcessing: {video_path}")
     
     # Download video from GCS to temp file
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_video:
@@ -140,7 +138,7 @@ def process_video_for_hand_tracking(
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         duration = total_frames / fps if fps > 0 else 0
         
-        print(f"Video properties: {width}x{height}, {fps} FPS, {total_frames} frames, {duration:.2f}s")
+        print(f"  Video: {width}x{height}, {fps} FPS, {total_frames} frames, {duration:.2f}s")
         
         # Download model file if needed
         model_dir = Path.home() / ".mediapipe" / "models"
@@ -148,20 +146,13 @@ def process_video_for_hand_tracking(
         model_path = model_dir / "hand_landmarker.task"
         
         if not model_path.exists():
-            print("Downloading hand landmarker model...")
+            print("  Downloading hand landmarker model...")
             model_url = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
             try:
                 urllib.request.urlretrieve(model_url, model_path)
-                print(f"Model downloaded to: {model_path}")
+                print(f"  Model downloaded to: {model_path}")
             except Exception as e:
-                raise RuntimeError(
-                    f"Failed to download model: {e}\n"
-                    f"Please manually download the model from:\n"
-                    f"{model_url}\n"
-                    f"and save it to: {model_path}"
-                )
-        else:
-            print(f"Using existing model: {model_path}")
+                raise RuntimeError(f"Failed to download model: {e}")
         
         # Initialize MediaPipe Hands
         base_options = python.BaseOptions(model_asset_path=str(model_path))
@@ -199,8 +190,6 @@ def process_video_for_hand_tracking(
         frame_count = 0
         hands_detected_count = 0
         
-        print("Processing frames...")
-        
         try:
             while cap.isOpened():
                 ret, frame = cap.read()
@@ -209,10 +198,10 @@ def process_video_for_hand_tracking(
                 
                 frame_count += 1
                 
-                # Convert BGR to RGB (MediaPipe uses RGB)
+                # Convert BGR to RGB
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-                # Process frame for hand tracking
+                # Process frame
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
                 timestamp_ms = int((frame_count / fps) * 1000)
                 detection_result = hand_landmarker.detect_for_video(mp_image, timestamp_ms)
@@ -262,14 +251,13 @@ def process_video_for_hand_tracking(
                         frame_data["hands"].append(hand_data)
                         hands_detected_count += 1
                         
-                        # Draw hand landmarks on frame for visualization
+                        # Draw visualization
                         if save_visualization:
                             for landmark in hand_landmarks:
                                 x = int(landmark.x * width)
                                 y = int(landmark.y * height)
                                 cv2.circle(frame, (x, y), 3, (0, 255, 0), -1)
                             
-                            # Draw connections
                             connections = [
                                 (0, 1), (1, 2), (2, 3), (3, 4),
                                 (0, 5), (5, 6), (6, 7), (7, 8),
@@ -295,14 +283,8 @@ def process_video_for_hand_tracking(
                 # Write visualization frame
                 if save_visualization and vis_writer:
                     vis_writer.write(frame)
-                
-                # Progress update
-                if frame_count % 30 == 0:
-                    hands_in_frame = len(detection_result.hand_landmarks) if detection_result.hand_landmarks else 0
-                    print(f"Frame {frame_count}/{total_frames}: {hands_in_frame} hands detected")
         
         finally:
-            # Cleanup
             cap.release()
             hand_landmarker.close()
             if vis_writer:
@@ -322,29 +304,22 @@ def process_video_for_hand_tracking(
             json.dump(tracking_data, temp_json, indent=2)
         
         # Upload JSON to GCS
-        print(f"\nUploading tracking data to: {output_gcs_path}")
         gcs_upload(temp_json_path, output_gcs_path)
         
         # Upload visualization if created
         if save_visualization and temp_vis_path and os.path.exists(temp_vis_path):
             vis_gcs_path = output_gcs_path.replace("_hand_tracking.json", "_hand_tracking_vis.mp4")
-            print(f"Uploading visualization to: {vis_gcs_path}")
             gcs_upload(temp_vis_path, vis_gcs_path)
             os.unlink(temp_vis_path)
         
         # Cleanup temp files
         os.unlink(temp_json_path)
         
-        print(f"\n✓ Processing complete!")
-        print(f"  - Frames processed: {frame_count}")
-        print(f"  - Frames with hands: {tracking_data['summary']['frames_with_hands']}")
-        print(f"  - Total hand detections: {hands_detected_count}")
-        print(f"  - JSON output: {output_gcs_path}")
+        print(f"  ✓ Complete! Frames: {frame_count}, Hands detected: {hands_detected_count}")
         
         return tracking_data
     
     finally:
-        # Cleanup temp video
         if os.path.exists(temp_video_path):
             os.unlink(temp_video_path)
 
@@ -356,7 +331,7 @@ def process_sessions_folder(
     skip_existing: bool = True
 ):
     """
-    Process all videos in Sessions folder structure.
+    Process all videos in Sessions/Session-X/shot_XX folder structure.
     
     Args:
         sessions_gcs_prefix: GCS path to Sessions folder (e.g., gs://bucket/Sessions)
@@ -378,54 +353,65 @@ def process_sessions_folder(
         print("No session folders found!")
         return
     
-    print(f"Found {len(session_folders)} session folders:")
-    for folder in session_folders:
-        print(f"  - {folder}")
+    print(f"Found {len(session_folders)} session folders")
     
     video_names = ["Clip.mp4", "Left_Wrist.mp4", "Right_Wrist.mp4"]
     
     total_videos = 0
     processed_videos = 0
     skipped_videos = 0
+    error_videos = 0
     
-    for session_folder in session_folders:
+    for session_folder in sorted(session_folders):
         session_name = session_folder.split('/')[-1]
         print(f"\n{'='*80}")
         print(f"Processing {session_name}")
         print(f"{'='*80}")
         
-        for video_name in video_names:
-            video_gcs_path = f"{session_folder}/{video_name}"
-            json_output_name = video_name.replace(".mp4", "_hand_tracking.json")
-            json_gcs_path = f"{session_folder}/{json_output_name}"
+        # List all shot folders (shot_01, shot_02, etc.)
+        shot_folders = list_gcs_folders(session_folder)
+        
+        if not shot_folders:
+            print(f"  No shot folders found in {session_name}")
+            continue
+        
+        print(f"  Found {len(shot_folders)} shot folders")
+        
+        for shot_folder in sorted(shot_folders):
+            shot_name = shot_folder.split('/')[-1]
+            print(f"\n  --- {shot_name} ---")
             
-            total_videos += 1
-            
-            # Check if video exists
-            if not gcs_file_exists(video_gcs_path):
-                print(f"\n⚠ Video not found: {video_gcs_path}")
-                continue
-            
-            # Check if JSON already exists
-            if skip_existing and gcs_file_exists(json_gcs_path):
-                print(f"\n✓ Skipping {video_name} (JSON already exists)")
-                skipped_videos += 1
-                continue
-            
-            # Process the video
-            try:
-                process_video_for_hand_tracking(
-                    video_path=video_gcs_path,
-                    output_gcs_path=json_gcs_path,
-                    save_visualization=save_visualization,
-                    min_detection_confidence=min_detection_confidence,
-                    min_tracking_confidence=min_tracking_confidence
-                )
-                processed_videos += 1
-            except Exception as e:
-                print(f"\n❌ Error processing {video_gcs_path}: {e}")
-                import traceback
-                traceback.print_exc()
+            for video_name in video_names:
+                video_gcs_path = f"{shot_folder}/{video_name}"
+                json_output_name = video_name.replace(".mp4", "_hand_tracking.json")
+                json_gcs_path = f"{shot_folder}/{json_output_name}"
+                
+                total_videos += 1
+                
+                # Check if video exists
+                if not gcs_file_exists(video_gcs_path):
+                    print(f"    ⚠ Video not found: {video_name}")
+                    continue
+                
+                # Check if JSON already exists
+                if skip_existing and gcs_file_exists(json_gcs_path):
+                    print(f"    ✓ Skipping {video_name} (JSON exists)")
+                    skipped_videos += 1
+                    continue
+                
+                # Process the video
+                try:
+                    process_video_for_hand_tracking(
+                        video_path=video_gcs_path,
+                        output_gcs_path=json_gcs_path,
+                        save_visualization=save_visualization,
+                        min_detection_confidence=min_detection_confidence,
+                        min_tracking_confidence=min_tracking_confidence
+                    )
+                    processed_videos += 1
+                except Exception as e:
+                    print(f"    ❌ Error processing {video_name}: {e}")
+                    error_videos += 1
     
     print(f"\n{'='*80}")
     print(f"BATCH PROCESSING COMPLETE")
@@ -433,12 +419,13 @@ def process_sessions_folder(
     print(f"Total videos found: {total_videos}")
     print(f"Processed: {processed_videos}")
     print(f"Skipped (already exist): {skipped_videos}")
+    print(f"Errors: {error_videos}")
     print(f"{'='*80}\n")
 
 def main():
     """Main function for command-line usage."""
     parser = argparse.ArgumentParser(
-        description="Extract 3D hand tracking data from videos in Sessions folder structure"
+        description="Extract 3D hand tracking data from videos in Sessions/Session-X/shot_XX structure"
     )
     parser.add_argument(
         "sessions_gcs_prefix",
