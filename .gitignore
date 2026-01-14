@@ -1,0 +1,12 @@
+.env
+.env.save
+service-account
+uploads
+secrets
+venv
+downloads
+tests/download_file.py
+clips_test_stream*
+.DS_Store
+.env
+*.mp4
