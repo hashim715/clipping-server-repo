@@ -10,78 +10,78 @@ Segments should be longer than 2 minutes and shorter than 10 minutes.
 Prefer splitting into more segments rather than fewer, as long as the duration rule is respected.
 ⚠️ TIMESTAMP STRICTNESS REQUIREMENT
 Be strict with timestamps:
-• Do NOT include camera setup, adjustment, or handling at the beginning of the video
-• Do NOT include camera shutdown, handling, or idle tail at the end of the video
-• Segments should start after the camera is stable and the activity has clearly begun
-• Segments should end before the activity finishes and before any camera teardown or idle period
+•⁠  ⁠Do NOT include camera setup, adjustment, or handling at the beginning of the video
+•⁠  ⁠Do NOT include camera shutdown, handling, or idle tail at the end of the video
+•⁠  ⁠Segments should start after the camera is stable and the activity has clearly begun
+•⁠  ⁠Segments should end before the activity finishes and before any camera teardown or idle period
 ────────────────────────────────────────
 STEP 0 — FULL VIDEO SCAN
 ────────────────────────────────────────
 Scan the entire video from start to finish.
 While scanning, identify points where ANY of the following change:
-• The person starts or stops a high-level action
-• The object being interacted with changes
-• The camera viewpoint changes significantly
-• The person moves to a different area or room
-• There is a noticeable pause or idle period (≥5 seconds)
-Each change should usually start a NEW segment, while keeping the duration between 2–7 minutes.
+•⁠  ⁠The person starts or stops a high-level action
+•⁠  ⁠The object being interacted with changes
+•⁠  ⁠The camera viewpoint changes significantly
+•⁠  ⁠The person moves to a different area or room
+•⁠  ⁠There is a noticeable pause or idle period (≥5 seconds)
+Each change should usually start a NEW segment, while keeping the duration between 2–10 minutes.
 ────────────────────────────────────────
 STEP 1 — SEGMENT DEFINITION
 ────────────────────────────────────────
 A segment is a coherent, continuous action or activity that lasts
-approximately 2–7 minutes.
+approximately 2–10 minutes.
 Examples of valid segments:
-• Preparing a meal
-• Cleaning and organizing a room
-• Doing laundry from start to finish
-• Walking to a different room while performing a task
-• Unpacking groceries across cabinets
-• Setting up a workspace
+•⁠  ⁠Preparing a meal
+•⁠  ⁠Cleaning and organizing a room
+•⁠  ⁠Doing laundry from start to finish
+•⁠  ⁠Walking to a different room while performing a task
+•⁠  ⁠Unpacking groceries across cabinets
+•⁠  ⁠Setting up a workspace
 Segments SHOULD be split if:
-• The action or activity clearly changes
-• Duration exceeds 7 minutes
-• There is a clear idle or transition period
+•⁠  ⁠The action or activity clearly changes
+•⁠  ⁠Duration exceeds 10 minutes
+•⁠  ⁠There is a clear idle or transition period
 Do NOT merge unrelated actions just to reach 7 minutes.
 ────────────────────────────────────────
 STEP 2 — TIMESTAMP RULES
 ────────────────────────────────────────
-• Use precise timestamps
-• Start time: when the segment begins
-• End time: when the segment ends
-• Timestamps must be in MM:SS.mmm format
-• Start timestamps must exclude camera setup or adjustment
-• End timestamps must exclude camera teardown or idle tail
+•⁠  ⁠Use precise timestamps
+•⁠  ⁠Start time: when the segment begins
+•⁠  ⁠End time: when the segment ends
+•⁠  ⁠Timestamps must be in MM:SS.mmm format
+•⁠  ⁠Start timestamps must exclude camera setup or adjustment
+•⁠  ⁠End timestamps must exclude camera teardown or idle tail
 ────────────────────────────────────────
 STEP 3 — SEGMENT DURATION
 ────────────────────────────────────────
-• Minimum duration: 2 minutes (120 seconds)
-• Maximum duration: 10 minutes (600 seconds)
-• If a segment is shorter than 2 minutes, merge with adjacent action if possible
-• If a segment is longer than 10 minutes, split based on action changes
+•⁠  ⁠Minimum duration: 2 minutes (120 seconds)
+•⁠  ⁠Maximum duration: 10 minutes (600 seconds)
+•⁠  ⁠If a segment is shorter than 2 minutes, merge with adjacent action if possible
+•⁠  ⁠If a segment is longer than 10 minutes, split based on action changes
 ────────────────────────────────────────
 STEP 4 — DESCRIPTION
 ────────────────────────────────────────
 For EACH segment, provide ONE clear sentence describing:
-• The main high-level action
-• The primary location or object
+•⁠  ⁠The main high-level action
+•⁠  ⁠The primary location or object
 Examples:
-• "Preparing and cooking a meal in the kitchen"
-• "Cleaning and organizing the living room"
-• "Sorting and folding laundry in the bedroom"
-• "Unpacking groceries into kitchen cabinets"
+•⁠  ⁠"Preparing and cooking a meal in the kitchen"
+•⁠  ⁠"Cleaning and organizing the living room"
+•⁠  ⁠"Sorting and folding laundry in the bedroom"
+•⁠  ⁠"Unpacking groceries into kitchen cabinets"
 Avoid:
-• Listing minor sub-actions
-• Grouping multiple unrelated tasks
-• Long, multi-sentence descriptions
+•⁠  ⁠Listing minor sub-actions
+•⁠  ⁠Grouping multiple unrelated tasks
+•⁠  ⁠Long, multi-sentence descriptions
 ────────────────────────────────────────
 FINAL CHECK
 ────────────────────────────────────────
 Before finalizing:
-• Each segment is between 2 and 10 minutes
-• Segments are coherent, high-level actions
-• Timestamps strictly exclude camera setup and teardown
-• Timestamps are accurate
-• Descriptions match the segment
+•⁠  ⁠Each segment is between 2 and 10 minutes
+•⁠  ⁠Segments are coherent, high-level actions
+•⁠  ⁠Timestamps strictly exclude camera setup and teardown
+•⁠  ⁠Timestamps are accurate
+•⁠  ⁠Descriptions match the segment
 ────────────────────────────────────────
 OUTPUT FORMAT (JSON ONLY)
 ────────────────────────────────────────
@@ -91,5 +91,19 @@ Return ONLY valid JSON:
     "start_time": "MM:SS.mmm",
     "end_time": "MM:SS.mmm",
     "description": "Short description of the high-level action or task being performed“
+  }
+]
+
+Example output:
+[
+  {
+    "start_time": "00:05.123",
+    "end_time": "00:15.789",
+    "description": "Washing dishes in the kitchen sink with soap and water"
+  },
+  {
+    "start_time": "00:35.234",
+    "end_time": "06:12.456",
+    "description": "Cooking pasta on the stove in the kitchen"
   }
 ]
