@@ -7,6 +7,7 @@ python clip_from_json.py \
     --json_gcs gs://egocentric-main/results_egocentric/Clip-1_tasks.json \
     --clips_gcs_prefix gs://egocentric-main/Sessions/Session-1 \
     --clip_name Left_Wrist \
+    --flip \
     --overwrite
 """
 
@@ -68,6 +69,20 @@ def gcs_upload(local_path: str, gcs_uri: str):
     print(f"Uploaded {local_path} -> {gcs_uri}")
 
 
+def ffmpeg_rotate_180(input_video: str, output_video: str):
+    """Rotate video 180 degrees using ffmpeg"""
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", input_video,
+        "-vf", "hflip,vflip",
+        "-c:a", "copy",
+        output_video
+    ]
+    run_cmd(cmd)
+    print(f"Rotated video 180°: {input_video} -> {output_video}")
+
+
 def ffmpeg_clip(local_video: str, start: str, end: str, output_path: str):
     """Clip a video segment using ffmpeg"""
     cmd = [
@@ -91,6 +106,7 @@ def main():
     parser.add_argument("--json_gcs", required=True, help="GCS URL of the JSON defining segments")
     parser.add_argument("--clips_gcs_prefix", required=True, help="GCS path prefix to upload clips")
     parser.add_argument("--clip_name", required=True, help="Name for the clip (e.g., Left_Wrist, Right_Wrist, Clip)")
+    parser.add_argument("--flip", action="store_true", help="Rotate video 180 degrees before clipping")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -98,6 +114,12 @@ def main():
         # Download main video
         local_video = os.path.join(td, "video.mp4")
         gcs_download(args.video_gcs, local_video)
+
+        # Rotate video 180° if requested
+        if args.flip:
+            rotated_video = os.path.join(td, "video_rotated.mp4")
+            ffmpeg_rotate_180(local_video, rotated_video)
+            local_video = rotated_video
 
         # Download segments JSON
         local_json = os.path.join(td, "segments.json")
@@ -120,7 +142,8 @@ def main():
             gcs_upload(local_clip, gcs_clip_path)
             print(f"[OK] Uploaded {shot_folder}/{clip_filename} -> {gcs_clip_path}")
 
-    print(f"\nAll clips processed and uploaded for {args.clip_name}.")
+    flip_status = "with 180° rotation" if args.flip else "without rotation"
+    print(f"\nAll clips processed and uploaded for {args.clip_name} ({flip_status}).")
 
 
 if __name__ == "__main__":
