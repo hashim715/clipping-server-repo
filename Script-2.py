@@ -190,7 +190,7 @@ def main():
             # Generate and upload metadata only for regular clips
             if is_regular_clip:
                 metadata = get_video_metadata(local_clip)
-                metadata["task_description"] = seg.get("task_description", "")
+                metadata["task_description"] = seg.get("description", "")
                 
                 metadata_filename = "metadata.json"
                 local_metadata = os.path.join(local_folder, metadata_filename)
