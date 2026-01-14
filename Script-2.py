@@ -188,8 +188,10 @@ def main():
             print(f"[OK] Uploaded {shot_folder}/{clip_filename} -> {gcs_clip_path}")
 
             # Generate and upload metadata only for regular clips
+            # Generate and upload metadata only for regular clips
             if is_regular_clip:
                 metadata = get_video_metadata(local_clip)
+                metadata["codec"] = "h265"  # Override codec
                 metadata["task_description"] = seg.get("description", "")
                 
                 metadata_filename = "metadata.json"
