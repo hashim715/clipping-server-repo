@@ -46,7 +46,7 @@ def gcs_download(gcs_uri: str, local_path: str):
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_path)
     blob.download_to_filename(local_path)
-    print(f"Downloaded {gcs_uri} -> {local_path}")
+    print(f"Downloaded {gcs_uri}")
 
 def gcs_upload(local_path: str, gcs_uri: str):
     """Upload file to GCS"""
@@ -55,7 +55,7 @@ def gcs_upload(local_path: str, gcs_uri: str):
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_path)
     blob.upload_from_filename(local_path)
-    print(f"Uploaded {local_path} -> {gcs_uri}")
+    print(f"Uploaded to {gcs_uri}")
 
 def list_gcs_folders(gcs_prefix: str) -> List[str]:
     """List all folders under a GCS prefix"""
@@ -101,7 +101,6 @@ except ImportError as e:
 def process_video_for_hand_tracking(
     video_path: str,
     output_gcs_path: str,
-    save_visualization: bool = True,
     min_detection_confidence: float = 0.5,
     min_tracking_confidence: float = 0.5
 ) -> Dict:
@@ -111,14 +110,13 @@ def process_video_for_hand_tracking(
     Args:
         video_path: GCS path to input video file
         output_gcs_path: GCS path where to save the JSON output
-        save_visualization: Whether to save a video with hand landmarks visualized
         min_detection_confidence: Minimum confidence for hand detection (0.0-1.0)
         min_tracking_confidence: Minimum confidence for hand tracking (0.0-1.0)
     
     Returns:
         Dictionary containing tracking results and metadata
     """
-    print(f"\nProcessing: {video_path}")
+    print(f"\nProcessing: {video_path.split('/')[-1]}")
     
     # Download video from GCS to temp file
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_video:
@@ -138,7 +136,7 @@ def process_video_for_hand_tracking(
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         duration = total_frames / fps if fps > 0 else 0
         
-        print(f"  Video: {width}x{height}, {fps} FPS, {total_frames} frames, {duration:.2f}s")
+        print(f"  {width}x{height}, {fps} FPS, {total_frames} frames, {duration:.2f}s")
         
         # Download model file if needed
         model_dir = Path.home() / ".mediapipe" / "models"
@@ -146,11 +144,10 @@ def process_video_for_hand_tracking(
         model_path = model_dir / "hand_landmarker.task"
         
         if not model_path.exists():
-            print("  Downloading hand landmarker model...")
+            print("  Downloading model...")
             model_url = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
             try:
                 urllib.request.urlretrieve(model_url, model_path)
-                print(f"  Model downloaded to: {model_path}")
             except Exception as e:
                 raise RuntimeError(f"Failed to download model: {e}")
         
@@ -165,14 +162,6 @@ def process_video_for_hand_tracking(
             min_tracking_confidence=min_tracking_confidence
         )
         hand_landmarker = vision.HandLandmarker.create_from_options(options)
-        
-        # Initialize video writer for visualization if needed
-        vis_writer = None
-        temp_vis_path = None
-        if save_visualization:
-            temp_vis_path = temp_video_path.replace(".mp4", "_vis.mp4")
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            vis_writer = cv2.VideoWriter(temp_vis_path, fourcc, fps, (width, height))
         
         # Storage for tracking data
         tracking_data = {
@@ -250,45 +239,12 @@ def process_video_for_hand_tracking(
                         
                         frame_data["hands"].append(hand_data)
                         hands_detected_count += 1
-                        
-                        # Draw visualization
-                        if save_visualization:
-                            for landmark in hand_landmarks:
-                                x = int(landmark.x * width)
-                                y = int(landmark.y * height)
-                                cv2.circle(frame, (x, y), 3, (0, 255, 0), -1)
-                            
-                            connections = [
-                                (0, 1), (1, 2), (2, 3), (3, 4),
-                                (0, 5), (5, 6), (6, 7), (7, 8),
-                                (0, 9), (9, 10), (10, 11), (11, 12),
-                                (0, 13), (13, 14), (14, 15), (15, 16),
-                                (0, 17), (17, 18), (18, 19), (19, 20),
-                                (5, 9), (9, 13), (13, 17)
-                            ]
-                            for start_idx, end_idx in connections:
-                                if start_idx < len(hand_landmarks) and end_idx < len(hand_landmarks):
-                                    start = hand_landmarks[start_idx]
-                                    end = hand_landmarks[end_idx]
-                                    cv2.line(
-                                        frame,
-                                        (int(start.x * width), int(start.y * height)),
-                                        (int(end.x * width), int(end.y * height)),
-                                        (0, 255, 0),
-                                        2
-                                    )
                 
                 tracking_data["frames"].append(frame_data)
-                
-                # Write visualization frame
-                if save_visualization and vis_writer:
-                    vis_writer.write(frame)
         
         finally:
             cap.release()
             hand_landmarker.close()
-            if vis_writer:
-                vis_writer.release()
         
         # Add summary statistics
         tracking_data["summary"] = {
@@ -306,16 +262,10 @@ def process_video_for_hand_tracking(
         # Upload JSON to GCS
         gcs_upload(temp_json_path, output_gcs_path)
         
-        # Upload visualization if created
-        if save_visualization and temp_vis_path and os.path.exists(temp_vis_path):
-            vis_gcs_path = output_gcs_path.replace("_hand_tracking.json", "_hand_tracking_vis.mp4")
-            gcs_upload(temp_vis_path, vis_gcs_path)
-            os.unlink(temp_vis_path)
-        
         # Cleanup temp files
         os.unlink(temp_json_path)
         
-        print(f"  ✓ Complete! Frames: {frame_count}, Hands detected: {hands_detected_count}")
+        print(f"  ✓ Frames: {frame_count}, Hands: {hands_detected_count}")
         
         return tracking_data
     
@@ -325,7 +275,6 @@ def process_video_for_hand_tracking(
 
 def process_sessions_folder(
     sessions_gcs_prefix: str,
-    save_visualization: bool = True,
     min_detection_confidence: float = 0.5,
     min_tracking_confidence: float = 0.5,
     skip_existing: bool = True
@@ -335,7 +284,6 @@ def process_sessions_folder(
     
     Args:
         sessions_gcs_prefix: GCS path to Sessions folder (e.g., gs://bucket/Sessions)
-        save_visualization: Whether to save visualization videos
         min_detection_confidence: Minimum confidence for hand detection
         min_tracking_confidence: Minimum confidence for hand tracking
         skip_existing: Skip processing if JSON already exists
@@ -343,7 +291,7 @@ def process_sessions_folder(
     setup_gcp_auth()
     
     print(f"\n{'='*80}")
-    print(f"Scanning Sessions folder: {sessions_gcs_prefix}")
+    print(f"Scanning: {sessions_gcs_prefix}")
     print(f"{'='*80}\n")
     
     # List all session folders (Session-1, Session-2, etc.)
@@ -353,7 +301,7 @@ def process_sessions_folder(
         print("No session folders found!")
         return
     
-    print(f"Found {len(session_folders)} session folders")
+    print(f"Found {len(session_folders)} session folders\n")
     
     video_names = ["Clip.mp4", "Left_Wrist.mp4", "Right_Wrist.mp4"]
     
@@ -364,22 +312,22 @@ def process_sessions_folder(
     
     for session_folder in sorted(session_folders):
         session_name = session_folder.split('/')[-1]
-        print(f"\n{'='*80}")
-        print(f"Processing {session_name}")
+        print(f"{'='*80}")
+        print(f"{session_name}")
         print(f"{'='*80}")
         
         # List all shot folders (shot_01, shot_02, etc.)
         shot_folders = list_gcs_folders(session_folder)
         
         if not shot_folders:
-            print(f"  No shot folders found in {session_name}")
+            print(f"  No shot folders found")
             continue
         
-        print(f"  Found {len(shot_folders)} shot folders")
+        print(f"Found {len(shot_folders)} shots\n")
         
         for shot_folder in sorted(shot_folders):
             shot_name = shot_folder.split('/')[-1]
-            print(f"\n  --- {shot_name} ---")
+            print(f"--- {shot_name} ---")
             
             for video_name in video_names:
                 video_gcs_path = f"{shot_folder}/{video_name}"
@@ -390,12 +338,12 @@ def process_sessions_folder(
                 
                 # Check if video exists
                 if not gcs_file_exists(video_gcs_path):
-                    print(f"    ⚠ Video not found: {video_name}")
+                    print(f"  ⚠ {video_name} not found")
                     continue
                 
                 # Check if JSON already exists
                 if skip_existing and gcs_file_exists(json_gcs_path):
-                    print(f"    ✓ Skipping {video_name} (JSON exists)")
+                    print(f"  ✓ {video_name} (skipped - exists)")
                     skipped_videos += 1
                     continue
                 
@@ -404,21 +352,22 @@ def process_sessions_folder(
                     process_video_for_hand_tracking(
                         video_path=video_gcs_path,
                         output_gcs_path=json_gcs_path,
-                        save_visualization=save_visualization,
                         min_detection_confidence=min_detection_confidence,
                         min_tracking_confidence=min_tracking_confidence
                     )
                     processed_videos += 1
                 except Exception as e:
-                    print(f"    ❌ Error processing {video_name}: {e}")
+                    print(f"  ❌ {video_name}: {e}")
                     error_videos += 1
+            
+            print()  # Blank line between shots
     
-    print(f"\n{'='*80}")
-    print(f"BATCH PROCESSING COMPLETE")
     print(f"{'='*80}")
-    print(f"Total videos found: {total_videos}")
+    print(f"COMPLETE")
+    print(f"{'='*80}")
+    print(f"Total: {total_videos}")
     print(f"Processed: {processed_videos}")
-    print(f"Skipped (already exist): {skipped_videos}")
+    print(f"Skipped: {skipped_videos}")
     print(f"Errors: {error_videos}")
     print(f"{'='*80}\n")
 
@@ -431,11 +380,6 @@ def main():
         "sessions_gcs_prefix",
         type=str,
         help="GCS path to Sessions folder (e.g., gs://bucket/Sessions)"
-    )
-    parser.add_argument(
-        "--no-visualization",
-        action="store_true",
-        help="Skip saving visualization videos"
     )
     parser.add_argument(
         "--min-detection-confidence",
@@ -460,7 +404,6 @@ def main():
     try:
         process_sessions_folder(
             sessions_gcs_prefix=args.sessions_gcs_prefix,
-            save_visualization=not args.no_visualization,
             min_detection_confidence=args.min_detection_confidence,
             min_tracking_confidence=args.min_tracking_confidence,
             skip_existing=not args.no_skip_existing
