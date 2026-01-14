@@ -105,13 +105,16 @@ def main():
         for idx, seg in enumerate(segments, start=1):
             start = seg["start_time"]
             end = seg["end_time"]
-            clip_name = f"shot_{idx:03d}.mp4"
-            local_clip = os.path.join(td, clip_name)
+            shot_folder = f"shot_{idx:03d}"
+            local_folder = os.path.join(td, shot_folder)
+            os.makedirs(local_folder, exist_ok=True)
+            local_clip = os.path.join(local_folder, f"{shot_folder}.mp4")
+
             ffmpeg_clip(local_video, start, end, local_clip)
 
-            gcs_clip_path = f"{args.clips_gcs_prefix}/{clip_name}"
+            gcs_clip_path = f"{args.clips_gcs_prefix}/{shot_folder}/{shot_folder}.mp4"
             gcs_upload(local_clip, gcs_clip_path)
-            print(f"[OK] Uploaded {clip_name} -> {gcs_clip_path}")
+            print(f"[OK] Uploaded {shot_folder} -> {gcs_clip_path}")
 
     print("\nAll clips processed and uploaded.")
 
