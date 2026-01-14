@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-Gemini task segment generator for egocentric clips (GCS SDK version).
+Gemini task segment generator for egocentric clips (NO gsutil).
 
 Inputs:
-  gs://<bucket>/Egocentric-Clips/Clip-<N>/clip-<N>.mp4
+  --video_gcs gs://bucket/path/video.mp4
+    OR
+  --clip <N>  (uses gs://<bucket>/Egocentric-Clips/Clip-N/clip-N.mp4)
 
 Outputs:
   gs://<bucket>/results_egocentric/Clip-<N>_tasks.json
+
+Auth:
+  Uses GOOGLE_APPLICATION_CREDENTIALS or GCP_KEY_FILE (.env)
 """
 
 import argparse
@@ -22,32 +27,27 @@ from google import genai
 from google.genai import types
 from google.cloud import storage
 
-# -------------------------------------------------
-# Environment + credentials
-# -------------------------------------------------
-
+# ---------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------
 load_dotenv()
 
 if os.getenv("GCP_KEY_FILE") and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
     key_path = Path(os.getenv("GCP_KEY_FILE")).resolve()
     if not key_path.exists():
-        raise FileNotFoundError(f"GCP key file not found: {key_path}")
+        raise FileNotFoundError(f"GCP key not found: {key_path}")
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(key_path)
-    print(f"✓ GCP credentials loaded from: {key_path}")
+    print(f"✓ GCP credentials loaded: {key_path}")
 elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-    print(f"✓ Using GOOGLE_APPLICATION_CREDENTIALS")
+    print("✓ Using existing GOOGLE_APPLICATION_CREDENTIALS")
 else:
     raise RuntimeError("❌ No GCP credentials configured")
 
-# -------------------------------------------------
+# ---------------------------------------------------------------------
 # Helpers
-# -------------------------------------------------
-
-def parse_gcs_uri(uri: str) -> tuple[str, str]:
-    if not uri.startswith("gs://"):
-        raise ValueError("Invalid GCS URI")
-    bucket, blob = uri[5:].split("/", 1)
-    return bucket, blob
+# ---------------------------------------------------------------------
+def guess_mime(uri: str) -> str:
+    return "video/quicktime" if uri.lower().endswith(".mov") else "video/mp4"
 
 
 def parse_clip_num(uri: str) -> int:
@@ -55,40 +55,44 @@ def parse_clip_num(uri: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def load_prompt(path: str) -> str:
-    if not os.path.exists(path):
-        raise FileNotFoundError(path)
-    return Path(path).read_text(encoding="utf-8").strip()
-
-
-def guess_mime(uri: str) -> str:
-    return "video/quicktime" if uri.lower().endswith(".mov") else "video/mp4"
-
-
-def normalize_tasks(tasks: Any) -> List[Dict[str, str]]:
-    if not isinstance(tasks, list):
+def normalize_tasks(raw: Any) -> List[Dict[str, str]]:
+    if not isinstance(raw, list):
         return []
+
     out = []
-    for t in tasks:
+    for t in raw:
         if not isinstance(t, dict):
             continue
-        s = t.get("start_time") or t.get("start")
-        e = t.get("end_time") or t.get("end")
-        d = t.get("description", "")
-        if s and e:
+        if "start_time" in t and "end_time" in t:
             out.append({
-                "start_time": str(s).strip(),
-                "end_time": str(e).strip(),
-                "description": str(d).strip(),
+                "start_time": str(t["start_time"]).strip(),
+                "end_time": str(t["end_time"]).strip(),
+                "description": str(t.get("description", "")).strip(),
             })
     return out
 
 
-# -------------------------------------------------
-# Gemini
-# -------------------------------------------------
+# ---------------------------------------------------------------------
+# GCS
+# ---------------------------------------------------------------------
+def gcs_download(uri: str, local_path: str):
+    client = storage.Client()
+    bucket_name, blob_path = uri.replace("gs://", "").split("/", 1)
+    bucket = client.bucket(bucket_name)
+    bucket.blob(blob_path).download_to_filename(local_path)
 
-def make_genai_client(project: str, location: str) -> genai.Client:
+
+def gcs_upload(local_path: str, uri: str):
+    client = storage.Client()
+    bucket_name, blob_path = uri.replace("gs://", "").split("/", 1)
+    bucket = client.bucket(bucket_name)
+    bucket.blob(blob_path).upload_from_filename(local_path)
+
+
+# ---------------------------------------------------------------------
+# Gemini
+# ---------------------------------------------------------------------
+def make_client(project: str, location: str):
     return genai.Client(vertexai=True, project=project, location=location)
 
 
@@ -102,7 +106,10 @@ def generate_tasks(
     resp = client.models.generate_content(
         model=model,
         contents=[
-            types.Part.from_uri(video_uri, mime_type=guess_mime(video_uri)),
+            types.Part.from_uri(
+                file_uri=video_uri,
+                mime_type=guess_mime(video_uri),
+            ),
             prompt,
         ],
         config=types.GenerateContentConfig(
@@ -116,15 +123,14 @@ def generate_tasks(
         try:
             tasks = json.loads(resp.text)
         except Exception:
-            tasks = None
+            tasks = []
 
     return normalize_tasks(tasks)
 
 
-# -------------------------------------------------
+# ---------------------------------------------------------------------
 # Main
-# -------------------------------------------------
-
+# ---------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--project", required=True)
@@ -136,54 +142,43 @@ def main():
     ap.add_argument("--video_gcs")
     args = ap.parse_args()
 
-    prompt = load_prompt(args.prompt_file)
-    genai_client = make_genai_client(args.project, args.location)
-    storage_client = storage.Client()
+    if not args.video_gcs and args.clip is None:
+        raise RuntimeError("Provide --video_gcs or --clip")
 
-    # Resolve video URI
+    prompt = Path(args.prompt_file).read_text().strip()
+    client = make_client(args.project, args.location)
+
     if args.video_gcs:
         video_uri = args.video_gcs
-    elif args.clip is not None:
-        video_uri = (
-            f"gs://{args.bucket}/Egocentric-Clips/Clip-{args.clip}/clip-{args.clip}.mp4"
-        )
     else:
-        raise RuntimeError("Provide --video_gcs or --clip")
+        video_uri = (
+            f"gs://{args.bucket}/Egocentric-Clips/"
+            f"Clip-{args.clip}/clip-{args.clip}.mp4"
+        )
+
+    clip_num = parse_clip_num(video_uri)
+    out_uri = f"gs://{args.bucket}/results_egocentric/Clip-{clip_num}_tasks.json"
 
     print(f"Processing: {video_uri}")
 
-    # Download video
-    bucket_name, blob_path = parse_gcs_uri(video_uri)
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(blob_path)
+    tasks = generate_tasks(
+        client=client,
+        model=args.model,
+        prompt=prompt,
+        video_uri=video_uri,
+    )
 
-    if not blob.exists():
-        raise RuntimeError(f"❌ Video not found or no permission: {video_uri}")
+    print(f"✓ Tasks generated: {len(tasks)}")
 
     with tempfile.TemporaryDirectory() as td:
-        local_video = os.path.join(td, os.path.basename(blob_path))
-        blob.download_to_filename(local_video)
-        print(f"⬇ Downloaded video")
-
-        tasks = generate_tasks(
-            client=genai_client,
-            model=args.model,
-            prompt=prompt,
-            video_uri=video_uri,
-        )
-
-        clip_num = parse_clip_num(video_uri)
-        out_blob_path = f"results_egocentric/Clip-{clip_num}_tasks.json"
-        out_blob = bucket.blob(out_blob_path)
-
         local_json = os.path.join(td, "tasks.json")
         with open(local_json, "w") as f:
             json.dump(tasks, f, indent=2)
 
-        out_blob.upload_from_filename(local_json)
-        print(f"✓ Uploaded → gs://{args.bucket}/{out_blob_path}")
+        gcs_upload(local_json, out_uri)
 
-    print("Done ✅")
+    print(f"✓ Uploaded → {out_uri}")
+    print("Done.")
 
 
 if __name__ == "__main__":
