@@ -191,7 +191,7 @@ def main():
             # Generate and upload metadata only for regular clips
             if is_regular_clip:
                 metadata = get_video_metadata(local_clip)
-                metadata["codec"] = "h265"  # Override codec
+                metadata["codec"] = "H265"  # Override codec
                 metadata["task_description"] = seg.get("description", "")
                 
                 metadata_filename = "metadata.json"
