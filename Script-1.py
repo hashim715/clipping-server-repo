@@ -28,6 +28,26 @@ from typing import Any, Dict, List, Optional, Tuple
 from google import genai
 from google.genai import types
 
+from dotenv import load_dotenv
+from pathlib import Path
+import os
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Set up GCP credentials
+if os.getenv("GCP_KEY_FILE") and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+    gcp_key_path = Path(os.getenv("GCP_KEY_FILE")).resolve()
+    if not gcp_key_path.exists():
+        raise FileNotFoundError(f"GCP key file not found: {gcp_key_path}")
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(gcp_key_path)
+    print(f"✓ GCP credentials loaded from: {gcp_key_path}")
+elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+    print(f"✓ Using existing GOOGLE_APPLICATION_CREDENTIALS: {os.getenv('GOOGLE_APPLICATION_CREDENTIALS')}")
+else:
+    print("⚠ Warning: No GCP credentials configured")
+
+
 
 # -----------------------------
 # GCS helpers (gsutil-based)
@@ -71,6 +91,12 @@ def load_prompt_local(prompt_file: str) -> str:
         raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
     with open(prompt_file, "r", encoding="utf-8") as f:
         return f.read().strip()
+    
+def download_gcs_video(gcs_uri: str, tmp_dir: str) -> str:
+    local_path = os.path.join(tmp_dir, os.path.basename(gcs_uri))
+    print(f"⬇ Downloading {gcs_uri} → {local_path}")
+    gsutil_cp_to_local(gcs_uri, local_path)
+    return local_path
 
 
 def parse_clip_num_from_uri(uri: str) -> Optional[int]:
@@ -206,6 +232,10 @@ def main():
     ap.add_argument("--clip", type=int, default=None, help="Only process this Clip-<N>")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite tasks JSON if it already exists")
     ap.add_argument("--limit", type=int, default=None, help="Process at most N clips (debug)")
+    ap.add_argument(
+        "--video_gcs",
+        help="GCS URI of the video to process (gs://bucket/path/video.mp4)"
+    )
     args = ap.parse_args()
 
     bucket_uri = f"gs://{args.bucket}"
@@ -213,10 +243,26 @@ def main():
     client = make_genai_client(args.project, args.location)
 
     # Discover video uris
-    if args.clip is not None:
-        video_uris = [f"{bucket_uri}/{args.egocentric_prefix}/Clip-{args.clip}/clip-{args.clip}.mp4"]
-        if not gsutil_exists(video_uris[0]):
-            raise RuntimeError(f"Video not found: {video_uris[0]}")
+    video_sources = []
+
+    if args.video_gcs:
+        if not args.video_gcs.startswith("gs://"):
+            raise ValueError("--video_gcs must be a gs:// URI")
+        video_sources = [args.video_gcs]
+
+    elif args.clip is not None:
+        video_sources = [
+            f"{bucket_uri}/{args.egocentric_prefix}/Clip-{args.clip}/clip-{args.clip}.mp4"
+        ]
+
+    else:
+        video_sources = gsutil_ls(
+            f"{bucket_uri}/{args.egocentric_prefix}/Clip-*/clip-*.mp4"
+        )
+
+    if not video_sources:
+        raise RuntimeError("No videos found to process")
+
     else:
         video_uris = gsutil_ls(f"{bucket_uri}/{args.egocentric_prefix}/Clip-*/clip-*.mp4")
         if not video_uris:
@@ -228,47 +274,30 @@ def main():
 
     print(f"Found {len(video_uris)} video(s) to process.")
 
-    for video_uri in video_uris:
-        clip_num = parse_clip_num_from_uri(video_uri)
-        if clip_num is None:
-            print(f"[WARN] Could not parse clip number from: {video_uri}")
-            continue
+    for video_uri in video_sources:
+        with tempfile.TemporaryDirectory() as td:
+            # Download video locally
+            local_video = download_gcs_video(video_uri, td)
 
-        out_tasks_uri = f"{bucket_uri}/{args.tasks_prefix}/Clip-{clip_num}_tasks.json"
+            clip_num = parse_clip_num_from_uri(video_uri) or 0
+            out_tasks_uri = f"{bucket_uri}/{args.tasks_prefix}/Clip-{clip_num}_tasks.json"
 
-        if (not args.overwrite) and gsutil_exists(out_tasks_uri):
-            print(f"[SKIP] tasks already exist: {out_tasks_uri}")
-            continue
+            print(f"\nProcessing: {video_uri}")
 
-        print(f"\n=== Clip-{clip_num} ===")
-        print(f"Video: {video_uri}")
-        print(f"Out:   {out_tasks_uri}")
-
-        try:
             tasks = generate_tasks_for_video(
                 client=client,
                 model=args.model,
                 prompt=prompt,
-                video_uri=video_uri,
+                video_uri=video_uri,  
             )
-        except Exception as e:
-            print(f"[ERROR] Gemini failed for Clip-{clip_num}: {e}")
-            continue
 
-        print(f"Tasks returned: {len(tasks)}")
-
-        # Write locally then upload to GCS
-        with tempfile.TemporaryDirectory() as td:
-            local_json = os.path.join(td, f"Clip-{clip_num}_tasks.json")
-            with open(local_json, "w", encoding="utf-8") as f:
+            local_json = os.path.join(td, "tasks.json")
+            with open(local_json, "w") as f:
                 json.dump(tasks, f, indent=2)
 
-            # Upload
-            try:
-                gsutil_cp_to_gcs(local_json, out_tasks_uri)
-                print(f"[OK] Uploaded tasks -> {out_tasks_uri}")
-            except Exception as e:
-                print(f"[ERROR] Upload failed for Clip-{clip_num}: {e}")
+            gsutil_cp_to_gcs(local_json, out_tasks_uri)
+            print(f"✓ Uploaded → {out_tasks_uri}")
+
 
     print("\nDone.")
 
