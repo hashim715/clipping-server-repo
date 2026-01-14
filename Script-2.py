@@ -6,6 +6,7 @@ python clip_from_json.py \
     --video_gcs gs://egocentric-main/Egocentric-Clips/Clip-1/clip-1.mp4 \
     --json_gcs gs://egocentric-main/results_egocentric/Clip-1_tasks.json \
     --clips_gcs_prefix gs://egocentric-main/Sessions/Session-1 \
+    --clip_name Left_Wrist \
     --overwrite
 """
 
@@ -48,7 +49,7 @@ def run_cmd(cmd: list, timeout: int = None, check: bool = True):
 
 
 def gcs_download(gcs_uri: str, local_path: str):
-    """Download file from GCS using python client"""
+    """Download file from GCS using Python client"""
     client = storage.Client()
     bucket_name, blob_path = gcs_uri.replace("gs://", "").split("/", 1)
     bucket = client.bucket(bucket_name)
@@ -58,7 +59,7 @@ def gcs_download(gcs_uri: str, local_path: str):
 
 
 def gcs_upload(local_path: str, gcs_uri: str):
-    """Upload file to GCS using python client"""
+    """Upload file to GCS using Python client"""
     client = storage.Client()
     bucket_name, blob_path = gcs_uri.replace("gs://", "").split("/", 1)
     bucket = client.bucket(bucket_name)
@@ -89,34 +90,37 @@ def main():
     parser.add_argument("--video_gcs", required=True, help="GCS URL of the video to clip")
     parser.add_argument("--json_gcs", required=True, help="GCS URL of the JSON defining segments")
     parser.add_argument("--clips_gcs_prefix", required=True, help="GCS path prefix to upload clips")
+    parser.add_argument("--clip_name", required=True, help="Name for the clip (e.g., Left_Wrist, Right_Wrist, Clip)")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory() as td:
+        # Download main video
         local_video = os.path.join(td, "video.mp4")
         gcs_download(args.video_gcs, local_video)
 
+        # Download segments JSON
         local_json = os.path.join(td, "segments.json")
         gcs_download(args.json_gcs, local_json)
 
         with open(local_json, "r", encoding="utf-8") as f:
             segments: List[dict] = json.load(f)
 
+        # Process each segment
         for idx, seg in enumerate(segments, start=1):
-            start = seg["start_time"]
-            end = seg["end_time"]
-            shot_folder = f"shot_{idx:03d}"
+            shot_folder = f"shot_{idx:02d}"
             local_folder = os.path.join(td, shot_folder)
             os.makedirs(local_folder, exist_ok=True)
-            local_clip = os.path.join(local_folder, f"{shot_folder}.mp4")
 
-            ffmpeg_clip(local_video, start, end, local_clip)
+            clip_filename = f"{args.clip_name}.mp4"
+            local_clip = os.path.join(local_folder, clip_filename)
+            ffmpeg_clip(local_video, seg["start_time"], seg["end_time"], local_clip)
 
-            gcs_clip_path = f"{args.clips_gcs_prefix}/{shot_folder}/{shot_folder}.mp4"
+            gcs_clip_path = f"{args.clips_gcs_prefix}/{shot_folder}/{clip_filename}"
             gcs_upload(local_clip, gcs_clip_path)
-            print(f"[OK] Uploaded {shot_folder} -> {gcs_clip_path}")
+            print(f"[OK] Uploaded {shot_folder}/{clip_filename} -> {gcs_clip_path}")
 
-    print("\nAll clips processed and uploaded.")
+    print(f"\nAll clips processed and uploaded for {args.clip_name}.")
 
 
 if __name__ == "__main__":
