@@ -97,6 +97,47 @@ def ffmpeg_clip(local_video: str, start: str, end: str, output_path: str):
     run_cmd(cmd)
 
 
+def get_video_metadata(video_path: str) -> dict:
+    """Extract video metadata using ffprobe"""
+    cmd = [
+        "ffprobe",
+        "-v", "quiet",
+        "-print_format", "json",
+        "-show_format",
+        "-show_streams",
+        video_path
+    ]
+    result = run_cmd(cmd)
+    data = json.loads(result.stdout)
+    
+    # Find video stream
+    video_stream = next((s for s in data["streams"] if s["codec_type"] == "video"), None)
+    if not video_stream:
+        raise RuntimeError("No video stream found")
+    
+    # Extract metadata
+    duration = float(data["format"]["duration"])
+    width = int(video_stream["width"])
+    height = int(video_stream["height"])
+    
+    # Parse fps
+    fps_str = video_stream.get("r_frame_rate", "30/1")
+    num, den = map(int, fps_str.split("/"))
+    fps = round(num / den, 2)
+    
+    codec = video_stream.get("codec_name", "unknown")
+    size_bytes = int(data["format"]["size"])
+    
+    return {
+        "duration_sec": round(duration, 6),
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "codec": codec,
+        "size_bytes": size_bytes
+    }
+
+
 # --------------------------
 # Main
 # --------------------------
@@ -109,6 +150,9 @@ def main():
     parser.add_argument("--flip", action="store_true", help="Rotate video 180 degrees before clipping")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
+
+    # Check if this is the regular clip (not wrist videos)
+    is_regular_clip = args.clip_name.lower() == "clip"
 
     with tempfile.TemporaryDirectory() as td:
         # Download main video
@@ -138,9 +182,25 @@ def main():
             local_clip = os.path.join(local_folder, clip_filename)
             ffmpeg_clip(local_video, seg["start_time"], seg["end_time"], local_clip)
 
+            # Upload video clip
             gcs_clip_path = f"{args.clips_gcs_prefix}/{shot_folder}/{clip_filename}"
             gcs_upload(local_clip, gcs_clip_path)
             print(f"[OK] Uploaded {shot_folder}/{clip_filename} -> {gcs_clip_path}")
+
+            # Generate and upload metadata only for regular clips
+            if is_regular_clip:
+                metadata = get_video_metadata(local_clip)
+                metadata["task_description"] = seg.get("task_description", "")
+                
+                metadata_filename = "metadata.json"
+                local_metadata = os.path.join(local_folder, metadata_filename)
+                
+                with open(local_metadata, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2)
+                
+                gcs_metadata_path = f"{args.clips_gcs_prefix}/{shot_folder}/{metadata_filename}"
+                gcs_upload(local_metadata, gcs_metadata_path)
+                print(f"[OK] Uploaded {shot_folder}/{metadata_filename} -> {gcs_metadata_path}")
 
     flip_status = "with 180° rotation" if args.flip else "without rotation"
     print(f"\nAll clips processed and uploaded for {args.clip_name} ({flip_status}).")
