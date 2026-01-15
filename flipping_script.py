@@ -75,13 +75,16 @@ def list_gcs_folders(gcs_prefix: str):
     return folders
 
 def ffmpeg_rotate_180(input_video: str, output_video: str):
-    """Rotate video 180 degrees using ffmpeg"""
+    """Rotate video 180 degrees using ffmpeg with same compression as original"""
     cmd = [
         "ffmpeg",
         "-y",
         "-i", input_video,
         "-vf", "hflip,vflip",
-        "-c:a", "copy",
+        "-c:v", "libx264",           # Use H.264 codec
+        "-crf", "23",                # Quality (18-28, lower = better quality)
+        "-preset", "medium",         # Encoding speed/compression tradeoff
+        "-c:a", "copy",              # Copy audio without re-encoding
         output_video
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
