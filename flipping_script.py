@@ -87,29 +87,102 @@ def ffmpeg_rotate_180(input_video: str, output_video: str):
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg failed: {result.stderr}")
 
-def flip_wrist_videos(sessions_gcs_prefix: str, skip_existing: bool = True):
+def process_session_folder(session_folder: str, skip_existing: bool, videos_to_flip: list, output_suffix: str):
+    """Process a single session folder"""
+    session_name = session_folder.split('/')[-1]
+    print(f"{'='*80}")
+    print(f"{session_name}")
+    print(f"{'='*80}")
+    
+    # List all shot folders
+    shot_folders = list_gcs_folders(session_folder)
+    
+    if not shot_folders:
+        print(f"  No shot folders found\n")
+        return 0, 0, 0
+    
+    print(f"Found {len(shot_folders)} shots\n")
+    
+    processed = 0
+    skipped = 0
+    errors = 0
+    
+    for shot_folder in sorted(shot_folders):
+        shot_name = shot_folder.split('/')[-1]
+        print(f"--- {shot_name} ---")
+        
+        for video_name in videos_to_flip:
+            video_gcs_path = f"{shot_folder}/{video_name}"
+            output_name = video_name.replace(".mp4", f"_{output_suffix}.mp4")
+            output_gcs_path = f"{shot_folder}/{output_name}"
+            
+            # Check if original video exists
+            if not gcs_file_exists(video_gcs_path):
+                print(f"  ⚠ {video_name} not found")
+                continue
+            
+            # Check if copy already exists
+            if skip_existing and gcs_file_exists(output_gcs_path):
+                print(f"  ✓ {video_name} (skipped - {output_suffix} exists)")
+                skipped += 1
+                continue
+            
+            # Process the video
+            try:
+                print(f"\n  Processing {video_name}...")
+                
+                with tempfile.TemporaryDirectory() as td:
+                    # Download original
+                    local_input = os.path.join(td, video_name)
+                    gcs_download(video_gcs_path, local_input)
+                    
+                    # Flip video
+                    local_output = os.path.join(td, output_name)
+                    print(f"  Rotating 180°...")
+                    ffmpeg_rotate_180(local_input, local_output)
+                    
+                    # Upload flipped version
+                    gcs_upload(local_output, output_gcs_path)
+                    
+                    print(f"  ✓ Complete!\n")
+                    processed += 1
+                    
+            except Exception as e:
+                print(f"  ❌ Error: {e}\n")
+                errors += 1
+        
+        print()  # Blank line between shots
+    
+    return processed, skipped, errors
+
+def flip_wrist_videos(
+    gcs_path: str, 
+    skip_existing: bool = True, 
+    specific_session: str = None,
+    output_suffix: str = "Copy",
+    exclude_sessions: list = None
+):
     """
     Flip Left_Wrist.mp4 and Right_Wrist.mp4 videos by 180 degrees.
-    Saves as Left_Wrist_Copy.mp4 and Right_Wrist_Copy.mp4.
     
     Args:
-        sessions_gcs_prefix: GCS path to Sessions folder
-        skip_existing: Skip if copy already exists
+        gcs_path: GCS path to Sessions folder
+        skip_existing: Skip if output already exists
+        specific_session: Specific session name to process (e.g., "Session-1")
+        output_suffix: Suffix for output files (e.g., "Flipped" or "Copy")
+        exclude_sessions: List of sessions to exclude (e.g., ["Session-1"])
     """
     setup_gcp_auth()
     
     print(f"\n{'='*80}")
-    print(f"Flipping wrist videos in: {sessions_gcs_prefix}")
+    if specific_session:
+        print(f"Flipping wrist videos in: {gcs_path}/{specific_session}")
+    else:
+        print(f"Flipping wrist videos in: {gcs_path}")
+        if exclude_sessions:
+            print(f"Excluding: {', '.join(exclude_sessions)}")
+    print(f"Output suffix: {output_suffix}")
     print(f"{'='*80}\n")
-    
-    # List all session folders
-    session_folders = list_gcs_folders(sessions_gcs_prefix)
-    
-    if not session_folders:
-        print("No session folders found!")
-        return
-    
-    print(f"Found {len(session_folders)} session folders\n")
     
     videos_to_flip = ["Left_Wrist.mp4", "Right_Wrist.mp4"]
     
@@ -118,68 +191,42 @@ def flip_wrist_videos(sessions_gcs_prefix: str, skip_existing: bool = True):
     skipped_videos = 0
     error_videos = 0
     
+    # Determine which sessions to process
+    if specific_session:
+        # Process only the specific session
+        session_folders = [f"{gcs_path}/{specific_session}"]
+        print(f"Processing specific session: {specific_session}\n")
+    else:
+        # Process all sessions
+        session_folders = list_gcs_folders(gcs_path)
+        if not session_folders:
+            print("No session folders found!")
+            return
+        
+        # Filter out excluded sessions
+        if exclude_sessions:
+            original_count = len(session_folders)
+            session_folders = [
+                sf for sf in session_folders 
+                if sf.split('/')[-1] not in exclude_sessions
+            ]
+            excluded_count = original_count - len(session_folders)
+            print(f"Found {original_count} session folders ({excluded_count} excluded)\n")
+        else:
+            print(f"Found {len(session_folders)} session folders\n")
+    
+    # Process each session
     for session_folder in sorted(session_folders):
-        session_name = session_folder.split('/')[-1]
-        print(f"{'='*80}")
-        print(f"{session_name}")
-        print(f"{'='*80}")
-        
-        # List all shot folders
+        # Count videos in this session
         shot_folders = list_gcs_folders(session_folder)
+        session_video_count = len(shot_folders) * len(videos_to_flip)
+        total_videos += session_video_count
         
-        if not shot_folders:
-            print(f"  No shot folders found\n")
-            continue
-        
-        print(f"Found {len(shot_folders)} shots\n")
-        
-        for shot_folder in sorted(shot_folders):
-            shot_name = shot_folder.split('/')[-1]
-            print(f"--- {shot_name} ---")
-            
-            for video_name in videos_to_flip:
-                video_gcs_path = f"{shot_folder}/{video_name}"
-                output_name = video_name.replace(".mp4", "_Copy.mp4")
-                output_gcs_path = f"{shot_folder}/{output_name}"
-                
-                total_videos += 1
-                
-                # Check if original video exists
-                if not gcs_file_exists(video_gcs_path):
-                    print(f"  ⚠ {video_name} not found")
-                    continue
-                
-                # Check if copy already exists
-                if skip_existing and gcs_file_exists(output_gcs_path):
-                    print(f"  ✓ {video_name} (skipped - copy exists)")
-                    skipped_videos += 1
-                    continue
-                
-                # Process the video
-                try:
-                    print(f"\n  Processing {video_name}...")
-                    
-                    with tempfile.TemporaryDirectory() as td:
-                        # Download original
-                        local_input = os.path.join(td, video_name)
-                        gcs_download(video_gcs_path, local_input)
-                        
-                        # Flip video
-                        local_output = os.path.join(td, output_name)
-                        print(f"  Rotating 180°...")
-                        ffmpeg_rotate_180(local_input, local_output)
-                        
-                        # Upload flipped version
-                        gcs_upload(local_output, output_gcs_path)
-                        
-                        print(f"  ✓ Complete!\n")
-                        processed_videos += 1
-                        
-                except Exception as e:
-                    print(f"  ❌ Error: {e}\n")
-                    error_videos += 1
-            
-            print()  # Blank line between shots
+        # Process the session
+        p, s, e = process_session_folder(session_folder, skip_existing, videos_to_flip, output_suffix)
+        processed_videos += p
+        skipped_videos += s
+        error_videos += e
     
     print(f"{'='*80}")
     print(f"COMPLETE")
@@ -200,17 +247,46 @@ def main():
         help="GCS path to Sessions folder (e.g., gs://bucket/Sessions)"
     )
     parser.add_argument(
+        "--session",
+        type=str,
+        help="Specific session to process (e.g., Session-1). If not provided, processes all sessions except excluded ones."
+    )
+    parser.add_argument(
+        "--suffix",
+        type=str,
+        default="Copy",
+        help="Output file suffix (default: Copy). Use 'Flipped' for testing. Results in Left_Wrist_{suffix}.mp4"
+    )
+    parser.add_argument(
+        "--exclude",
+        type=str,
+        nargs="+",
+        default=["Session-1"],
+        help="Sessions to exclude when processing all (default: Session-1). Use --exclude to override."
+    )
+    parser.add_argument(
+        "--no-exclude",
+        action="store_true",
+        help="Process all sessions including Session-1"
+    )
+    parser.add_argument(
         "--no-skip-existing",
         action="store_true",
-        help="Process videos even if copy already exists"
+        help="Process videos even if output already exists"
     )
     
     args = parser.parse_args()
     
+    # Handle exclusions
+    exclude_sessions = None if args.no_exclude else args.exclude
+    
     try:
         flip_wrist_videos(
-            sessions_gcs_prefix=args.sessions_gcs_prefix,
-            skip_existing=not args.no_skip_existing
+            gcs_path=args.sessions_gcs_prefix,
+            skip_existing=not args.no_skip_existing,
+            specific_session=args.session,
+            output_suffix=args.suffix,
+            exclude_sessions=exclude_sessions
         )
     except Exception as e:
         print(f"Error: {e}")
