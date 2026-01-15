@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Flip wrist videos by 180 degrees and save as copies in GCS.
+Flip wrist videos by 180 degrees and replace the originals in GCS.
+By default, processes all sessions except Session-1.
 """
 
 import os
@@ -39,13 +40,13 @@ def gcs_download(gcs_uri: str, local_path: str):
     print(f"  Downloaded {gcs_uri.split('/')[-1]}")
 
 def gcs_upload(local_path: str, gcs_uri: str):
-    """Upload file to GCS"""
+    """Upload file to GCS (replaces existing)"""
     client = storage.Client()
     bucket_name, blob_path = gcs_uri.replace("gs://", "").split("/", 1)
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_path)
     blob.upload_from_filename(local_path)
-    print(f"  Uploaded {gcs_uri.split('/')[-1]}")
+    print(f"  Replaced {gcs_uri.split('/')[-1]}")
 
 def gcs_file_exists(gcs_uri: str) -> bool:
     """Check if a file exists in GCS"""
@@ -87,10 +88,10 @@ def ffmpeg_rotate_180(input_video: str, output_video: str):
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg failed: {result.stderr}")
 
-def process_session_folder(session_folder: str, skip_existing: bool, videos_to_flip: list, output_suffix: str):
+def process_session_folder(session_folder: str, videos_to_flip: list):
     """Process a single session folder"""
     session_name = session_folder.split('/')[-1]
-    print(f"{'='*80}")
+    print(f"\n{'='*80}")
     print(f"{session_name}")
     print(f"{'='*80}")
     
@@ -98,13 +99,12 @@ def process_session_folder(session_folder: str, skip_existing: bool, videos_to_f
     shot_folders = list_gcs_folders(session_folder)
     
     if not shot_folders:
-        print(f"  No shot folders found\n")
-        return 0, 0, 0
+        print(f"  No shot folders found")
+        return 0, 0
     
     print(f"Found {len(shot_folders)} shots\n")
     
     processed = 0
-    skipped = 0
     errors = 0
     
     for shot_folder in sorted(shot_folders):
@@ -113,18 +113,10 @@ def process_session_folder(session_folder: str, skip_existing: bool, videos_to_f
         
         for video_name in videos_to_flip:
             video_gcs_path = f"{shot_folder}/{video_name}"
-            output_name = video_name.replace(".mp4", f"_{output_suffix}.mp4")
-            output_gcs_path = f"{shot_folder}/{output_name}"
             
             # Check if original video exists
             if not gcs_file_exists(video_gcs_path):
                 print(f"  ⚠ {video_name} not found")
-                continue
-            
-            # Check if copy already exists
-            if skip_existing and gcs_file_exists(output_gcs_path):
-                print(f"  ✓ {video_name} (skipped - {output_suffix} exists)")
-                skipped += 1
                 continue
             
             # Process the video
@@ -137,12 +129,12 @@ def process_session_folder(session_folder: str, skip_existing: bool, videos_to_f
                     gcs_download(video_gcs_path, local_input)
                     
                     # Flip video
-                    local_output = os.path.join(td, output_name)
+                    local_output = os.path.join(td, f"flipped_{video_name}")
                     print(f"  Rotating 180°...")
                     ffmpeg_rotate_180(local_input, local_output)
                     
-                    # Upload flipped version
-                    gcs_upload(local_output, output_gcs_path)
+                    # Replace original with flipped version
+                    gcs_upload(local_output, video_gcs_path)
                     
                     print(f"  ✓ Complete!\n")
                     processed += 1
@@ -150,70 +142,62 @@ def process_session_folder(session_folder: str, skip_existing: bool, videos_to_f
             except Exception as e:
                 print(f"  ❌ Error: {e}\n")
                 errors += 1
-        
-        print()  # Blank line between shots
     
-    return processed, skipped, errors
+    return processed, errors
 
-def flip_wrist_videos(
-    gcs_path: str, 
-    skip_existing: bool = True, 
-    specific_session: str = None,
-    output_suffix: str = "Copy",
-    exclude_sessions: list = None
-):
+def flip_wrist_videos(gcs_path: str):
     """
     Flip Left_Wrist.mp4 and Right_Wrist.mp4 videos by 180 degrees.
+    Processes all sessions EXCEPT Session-1.
+    Replaces the original files with flipped versions.
     
     Args:
         gcs_path: GCS path to Sessions folder
-        skip_existing: Skip if output already exists
-        specific_session: Specific session name to process (e.g., "Session-1")
-        output_suffix: Suffix for output files (e.g., "Flipped" or "Copy")
-        exclude_sessions: List of sessions to exclude (e.g., ["Session-1"])
     """
     setup_gcp_auth()
     
     print(f"\n{'='*80}")
-    if specific_session:
-        print(f"Flipping wrist videos in: {gcs_path}/{specific_session}")
-    else:
-        print(f"Flipping wrist videos in: {gcs_path}")
-        if exclude_sessions:
-            print(f"Excluding: {', '.join(exclude_sessions)}")
-    print(f"Output suffix: {output_suffix}")
+    print(f"Flipping wrist videos in: {gcs_path}")
+    print(f"Excluding: Session-1")
+    print(f"⚠️  WARNING: This will REPLACE original files!")
     print(f"{'='*80}\n")
     
     videos_to_flip = ["Left_Wrist.mp4", "Right_Wrist.mp4"]
     
+    # Get all session folders
+    session_folders = list_gcs_folders(gcs_path)
+    
+    if not session_folders:
+        print("No session folders found!")
+        return
+    
+    # Filter out Session-1
+    original_count = len(session_folders)
+    session_folders = [
+        sf for sf in session_folders 
+        if sf.split('/')[-1] != "Session-1"
+    ]
+    
+    excluded_count = original_count - len(session_folders)
+    print(f"Found {original_count} session folders")
+    print(f"Processing {len(session_folders)} sessions (excluded {excluded_count})\n")
+    
+    if not session_folders:
+        print("No sessions to process after exclusion!")
+        return
+    
+    # Confirm before proceeding
+    print("⚠️  This will permanently replace the original videos with flipped versions.")
+    response = input("Continue? (yes/no): ").strip().lower()
+    if response != "yes":
+        print("Aborted.")
+        return
+    
+    print()
+    
     total_videos = 0
     processed_videos = 0
-    skipped_videos = 0
     error_videos = 0
-    
-    # Determine which sessions to process
-    if specific_session:
-        # Process only the specific session
-        session_folders = [f"{gcs_path}/{specific_session}"]
-        print(f"Processing specific session: {specific_session}\n")
-    else:
-        # Process all sessions
-        session_folders = list_gcs_folders(gcs_path)
-        if not session_folders:
-            print("No session folders found!")
-            return
-        
-        # Filter out excluded sessions
-        if exclude_sessions:
-            original_count = len(session_folders)
-            session_folders = [
-                sf for sf in session_folders 
-                if sf.split('/')[-1] not in exclude_sessions
-            ]
-            excluded_count = original_count - len(session_folders)
-            print(f"Found {original_count} session folders ({excluded_count} excluded)\n")
-        else:
-            print(f"Found {len(session_folders)} session folders\n")
     
     # Process each session
     for session_folder in sorted(session_folders):
@@ -223,23 +207,21 @@ def flip_wrist_videos(
         total_videos += session_video_count
         
         # Process the session
-        p, s, e = process_session_folder(session_folder, skip_existing, videos_to_flip, output_suffix)
+        p, e = process_session_folder(session_folder, videos_to_flip)
         processed_videos += p
-        skipped_videos += s
         error_videos += e
     
-    print(f"{'='*80}")
+    print(f"\n{'='*80}")
     print(f"COMPLETE")
     print(f"{'='*80}")
     print(f"Total videos: {total_videos}")
     print(f"Processed: {processed_videos}")
-    print(f"Skipped: {skipped_videos}")
     print(f"Errors: {error_videos}")
     print(f"{'='*80}\n")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Flip Left_Wrist and Right_Wrist videos by 180 degrees in GCS Sessions folder"
+        description="Flip Left_Wrist and Right_Wrist videos by 180 degrees and REPLACE originals. Processes all sessions EXCEPT Session-1."
     )
     parser.add_argument(
         "sessions_gcs_prefix",
@@ -247,52 +229,28 @@ def main():
         help="GCS path to Sessions folder (e.g., gs://bucket/Sessions)"
     )
     parser.add_argument(
-        "--session",
-        type=str,
-        help="Specific session to process (e.g., Session-1). If not provided, processes all sessions except excluded ones."
-    )
-    parser.add_argument(
-        "--suffix",
-        type=str,
-        default="Copy",
-        help="Output file suffix (default: Copy). Use 'Flipped' for testing. Results in Left_Wrist_{suffix}.mp4"
-    )
-    parser.add_argument(
-        "--exclude",
-        type=str,
-        nargs="+",
-        default=["Session-1"],
-        help="Sessions to exclude when processing all (default: Session-1). Use --exclude to override."
-    )
-    parser.add_argument(
-        "--no-exclude",
+        "--yes",
         action="store_true",
-        help="Process all sessions including Session-1"
-    )
-    parser.add_argument(
-        "--no-skip-existing",
-        action="store_true",
-        help="Process videos even if output already exists"
+        help="Skip confirmation prompt"
     )
     
     args = parser.parse_args()
     
-    # Handle exclusions
-    exclude_sessions = None if args.no_exclude else args.exclude
+    # Override confirmation if --yes flag is used
+    if args.yes:
+        original_input = __builtins__.input
+        __builtins__.input = lambda _: "yes"
     
     try:
-        flip_wrist_videos(
-            gcs_path=args.sessions_gcs_prefix,
-            skip_existing=not args.no_skip_existing,
-            specific_session=args.session,
-            output_suffix=args.suffix,
-            exclude_sessions=exclude_sessions
-        )
+        flip_wrist_videos(gcs_path=args.sessions_gcs_prefix)
     except Exception as e:
         print(f"Error: {e}")
         import traceback
         traceback.print_exc()
         return 1
+    finally:
+        if args.yes:
+            __builtins__.input = original_input
     
     return 0
 
